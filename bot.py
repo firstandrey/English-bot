@@ -9,6 +9,7 @@ from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from groq import Groq
 from supabase import create_client
+from gtts import gTTS
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -104,9 +105,9 @@ STRICT RULES:
 
         "translator": """You are a pure translator. Rules:
 - Russian text → translate to English only
-- English text → translate to Russian only  
-- Output ONLY the translation
-- No explanations, no notes, no extra text
+- English text → translate to Russian only
+- Output ONLY the translation, nothing else
+- No explanations, no notes, no comments
 - Just the clean translation""",
 
         "voice_dialog": f"""You are an English speaking coach. Student level: {level}.
@@ -114,8 +115,8 @@ STRICT RULES:
 - Reply ONLY in English, always, no exceptions
 - Short natural replies (2-3 sentences max)
 - This is speaking practice — stay in English no matter what
-- If student writes Russian, show them the English version
-- At the very end add ONE line: "💡 [по-русски: исправление если есть, или 'Отлично!']"
+- If student writes or says something in Russian, show them the English version
+- At the very end add ONE line: "💡 [по-русски: исправление если есть, или Отлично!]"
 - Be warm, encouraging, keep conversation going""",
 
         "picture": f"""Ты учишь английскому через картинки. Уровень ученика: {level}.
@@ -154,15 +155,13 @@ async def transcribe_voice(file_path):
 
 async def text_to_speech(text):
     try:
-        response = groq_client.audio.speech.create(
-            model="playai-tts",
-            voice="Celeste-PlayAI",
-            input=text[:500],
-            response_format="mp3"
-        )
+        clean_text = text.split("💡")[0].strip()
+        if not clean_text:
+            clean_text = text
+        tts = gTTS(text=clean_text, lang='en', slow=False)
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
             tmp_path = tmp.name
-        response.stream_to_file(tmp_path)
+        tts.save(tmp_path)
         return tmp_path
     except Exception as e:
         logging.error(f"TTS: {e}")
@@ -337,7 +336,7 @@ async def help_cmd(message: types.Message):
         "🎯 *Урок дня* — персональный урок\n"
         "📚 *Слова* — 5 новых слов с ассоциациями\n"
         "💬 *Диалог* — свободная практика английского\n"
-        "🎙 *Голосовой чат* — разговор голосом\n"
+        "🎙 *Голосовой чат* — живой разговор голосом\n"
         "🖼 *Картинки* — учи слова по фото\n"
         "🔄 *Переводчик* — мгновенный перевод\n"
         "📊 *Прогресс* — твой опыт и уровень\n\n"
@@ -387,11 +386,20 @@ async def handle_voice(message: types.Message):
                 [{"role": "user", "content": text}],
                 level, "voice_dialog"
             )
-            tts_path = await text_to_speech(response.split("💡")[0].strip())
+            correction = ""
+            if "💡" in response:
+                parts = response.split("💡")
+                english_part = parts[0].strip()
+                correction = "💡" + parts[1] if len(parts) > 1 else ""
+            else:
+                english_part = response
+            tts_path = await text_to_speech(english_part)
             if tts_path:
                 audio = types.FSInputFile(tts_path)
                 await bot.send_voice(message.chat.id, audio)
                 os.unlink(tts_path)
+                if correction:
+                    await message.answer(correction)
             else:
                 await message.answer(response)
         new_level = await add_xp(message.from_user.id, 20)

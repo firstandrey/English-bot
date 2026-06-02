@@ -385,7 +385,52 @@ async def handle_text(message: types.Message):
             f"🎉 *Новый уровень! Ты достиг {LEVEL_NAMES[new_level]}!*",
             parse_mode="Markdown"
         )
+@dp.message(F.web_app_data)
+async def handle_webapp(message: types.Message):
+    import json
+    user = await get_user(message.from_user.id)
+    level = user.get("level", "A0")
+    try:
+        data = json.loads(message.web_app_data.data)
+        action = data.get("action", "")
+    except:
+        return
 
+    mode_map = {
+        "lesson": "lesson",
+        "words": "words", 
+        "dialog": "dialog",
+        "voice": "voice_dialog",
+        "picture": "picture",
+        "translate": "translator"
+    }
+
+    mode = mode_map.get(action, "dialog")
+    user_modes[message.from_user.id] = mode
+
+    responses = {
+        "lesson": "🎯 Урок дня",
+        "words": "📚 Слова",
+        "dialog": "💬 Диалог",
+        "voice": "🎙 Голосовой чат",
+        "picture": "🖼 Картинки",
+        "translate": "🔄 Переводчик"
+    }
+
+    cmd = responses.get(action, "💬 Диалог")
+    
+    if action == "lesson":
+        await daily_lesson(message)
+    elif action == "words":
+        await learn_words(message)
+    elif action == "dialog":
+        await start_dialog(message)
+    elif action == "voice":
+        await voice_chat_mode(message)
+    elif action == "picture":
+        await picture_mode(message)
+    elif action == "translate":
+        await translator_mode(message)
 async def main():
     await dp.start_polling(bot)
 

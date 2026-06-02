@@ -95,7 +95,7 @@ body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; backg
   </div>
   <div class="daily-card" onclick="openChat('lesson','🎯 Урок дня')">
     <div class="daily-top"><span class="daily-icon">🎯</span><div><div class="daily-title">Урок дня</div><div class="daily-sub">Готов учиться? +20 XP</div></div></div>
-    <button class="daily-btn" onclick="openChat('lesson','🎯 Урок дня')">▶ Начать урок</button>
+    <button class="daily-btn">▶ Начать урок</button>
   </div>
   <div class="section-title">Режимы обучения</div>
   <div class="menu-grid">
@@ -156,9 +156,9 @@ body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; backg
 const tg = window.Telegram.WebApp;
 tg.expand();
 
+const API_URL = 'https://worker-production-d188.up.railway.app/ai';
 const SUPABASE_URL = 'https://ynwpyzksdskpkozzyjsq.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlud3B5emtzZHNrcGtvenp5anNxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA0MTQ0MDgsImV4cCI6MjA5NTk5MDQwOH0.8OZmwrPnPTIGx8YHOl_860wB8WCeSgQazrbWRMOyWGg';
-const OR_KEY = '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';
 
 const LEVELS = ['A0','A1','A2','B1','B2','C1'];
 const LEVEL_NAMES = {'A0':'🥚 Абсолютный новичок','A1':'🐣 Начинающий','A2':'🐥 Элементарный','B1':'🦅 Средний','B2':'🦁 Выше среднего','C1':'🏆 Продвинутый'};
@@ -218,7 +218,7 @@ function openChat(mode,title){
   document.getElementById('messages').innerHTML='';
   showScreen('chat');
   const welcomes={
-    'lesson':'Привет! 🎯 Начинаем урок дня. Напиши "начнём" и я проведу тебя через урок!',
+    'lesson':'Привет! 🎯 Начинаем урок дня. Напиши "начнём" — и я проведу тебя через урок!',
     'words':'Привет! 📚 Сейчас дам тебе 5 новых слов с ассоциациями. Напиши "давай"!',
     'dialog':'Привет! 💬 Я твой AI репетитор. Пиши по-английски или по-русски — помогу с любым вопросом!',
     'voice':'Привет! 🎙 Режим разговорного английского. Пиши фразы — я отвечу и исправлю ошибки!',
@@ -256,13 +256,13 @@ async function sendMessage(){
   addMessage('user',text);
   chatHistory.push({role:'user',content:text});
   const loading=addLoading();
-  try {
+  try{
     const reply=await askAI(chatHistory,currentLevel,currentMode);
     loading.remove();
     addMessage('bot',reply);
     chatHistory.push({role:'assistant',content:reply});
     await addXP(5);
-  } catch(e){
+  }catch(e){
     loading.remove();
     addMessage('bot','Упс, что-то пошло не так. Попробуй ещё раз! 🔄');
     console.error(e);
@@ -270,37 +270,20 @@ async function sendMessage(){
 }
 
 async function askAI(messages,level,mode){
-  const prompts={
-    'dialog':`Ты дружелюбный учитель английского. Уровень ученика: ${level}. Если A0-A1: объясняй на русском, давай английские фразы с переводом и транскрипцией. Исправляй ошибки в конце: "💡 Исправление: [ошибка] → [правильно]". Задавай один вопрос для продолжения.`,
-    'lesson':`Ты учитель английского. Уровень: ${level}. Создай урок дня: 📖 тема, ✨ 3 слова с транскрипцией и переводом, 📝 одно правило с примерами. Всё на русском, примеры с переводом.`,
-    'words':`Ты учитель английского. Уровень: ${level}. Дай 5 слов: 🔤 слово [транскрипция] — перевод, 💡 пример с переводом, 🧠 ассоциация для запоминания.`,
-    'voice':`Ты ведёшь разговорный диалог. Уровень: ${level}. Отвечай по-английски коротко. В конце на русском: "💡 [исправление или совет]". Если A0-A1 — добавляй перевод.`,
-    'picture':`Ты учишь через описания. Уровень: ${level}. Давай слова с транскрипцией и переводом, ассоциации, примеры предложений с переводом.`,
-    'translate':`Ты переводчик. Русский→Английский или Английский→Русский. Формат: "🔄 Перевод: [результат]" и краткое примечание.`
-  };
-  const res=await fetch('https://openrouter.ai/api/v1/chat/completions',{
+  const res=await fetch(API_URL,{
     method:'POST',
-    headers:{
-      'Content-Type':'application/json',
-      'Authorization':'Bearer '+OR_KEY,
-      'HTTP-Referer':'https://firstandrey.github.io',
-      'X-Title':'English AI Bot'
-    },
-    body:JSON.stringify({
-      model:'meta-llama/llama-3.1-8b-instruct:free',
-      messages:[{role:'system',content:prompts[mode]||prompts['dialog']},...messages],
-      max_tokens:700,temperature:0.7
-    })
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({messages,level,mode})
   });
   const data=await res.json();
-  if(!data.choices||!data.choices[0]) throw new Error('No response');
-  return data.choices[0].message.content;
+  if(!data.reply) throw new Error('No response');
+  return data.reply;
 }
 
 async function addXP(amount){
   const user=tg.initDataUnsafe?.user;
   if(!user) return;
-  try {
+  try{
     const newXP=(userData.xp||0)+amount;
     await fetch(`${SUPABASE_URL}/rest/v1/users?telegram_id=eq.${user.id}`,{
       method:'PATCH',
@@ -309,7 +292,7 @@ async function addXP(amount){
     });
     userData.xp=newXP;
     updateUI(userData);
-  } catch(e){}
+  }catch(e){}
 }
 
 function handleKey(e){ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage();} }
@@ -323,7 +306,7 @@ if(tgUser){
     if(data&&data[0]) updateUI(data[0]);
     else updateUI({level:'A0',xp:0,streak:0,lessons_done:0});
   }).catch(()=>updateUI({level:'A0',xp:0,streak:0,lessons_done:0}));
-} else {
+}else{
   updateUI({level:'A0',xp:0,streak:0,lessons_done:0});
 }
 </script>

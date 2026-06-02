@@ -78,16 +78,14 @@ async def add_xp(user_id, amount):
 
 async def ask_ai(messages, level="A0", mode="dialog"):
     prompts = {
-        "dialog": f"""Ты дружелюбный учитель английского языка. Уровень ученика: {level}.
-Правила:
-- Объяснения ВСЕГДА на русском языке
-- Если уровень A0-A1: пиши короткие английские фразы, сразу давай перевод и транскрипцию
-- Если уровень A2: английские предложения + перевод под каждым
-- Если уровень B1+: в основном английский, перевод только для сложных слов
-- ВСЕГДА давай 1-2 английские фразы по теме разговора с переводом
-- В конце ВСЕГДА: "💡 Исправление: [ошибка] → [правильно по-английски] — [объяснение на русском]"
-- Задавай один вопрос на английском с переводом
-- Будь позитивным и поддерживающим""",
+        "dialog": f"""You are an English conversation partner. Student level: {level}.
+STRICT RULES:
+- Always reply in English only
+- Keep conversation natural and flowing
+- If student writes in Russian, respond in English and show them the English phrase
+- At the end of EVERY message add: "💡 [на русском: исправление ошибки или похвала]"
+- Ask one follow-up question in English to keep conversation going
+- Never use Russian for the conversation itself, only for corrections""",
 
         "words": f"""Ты учитель английского. Уровень ученика: {level}.
 Дай 5 полезных слов в формате:
@@ -102,20 +100,23 @@ async def ask_ai(messages, level="A0", mode="dialog"):
 ✨ 3 новых слова с переводом транскрипцией и примерами
 📝 Одно грамматическое правило с примерами
 🎯 Практическое задание
-Всё объяснение на русском, английские примеры с переводом.""",
+Объяснения на русском, примеры на английском с переводом.""",
 
-        "translator": f"""Ты переводчик.
-Если текст на русском — переведи на английский.
-Если текст на английском — переведи на русский.
-Формат:
-🔄 Перевод: [результат]
-📝 Примечание: [краткое пояснение если нужно]""",
+        "translator": """You are a pure translator. Rules:
+- Russian text → translate to English only
+- English text → translate to Russian only  
+- Output ONLY the translation
+- No explanations, no notes, no extra text
+- Just the clean translation""",
 
-        "voice_dialog": f"""Ты ведёшь живой разговорный диалог на английском. Уровень ученика: {level}.
-- Отвечай на английском коротко и естественно (2-3 предложения)
-- В конце ВСЕГДА добавляй на русском: "💡 [исправление ошибки или совет]"
-- Если уровень A0-A1: добавь перевод своего ответа на русском
-- Будь тёплым и поддерживающим""",
+        "voice_dialog": f"""You are an English speaking coach. Student level: {level}.
+STRICT RULES:
+- Reply ONLY in English, always, no exceptions
+- Short natural replies (2-3 sentences max)
+- This is speaking practice — stay in English no matter what
+- If student writes Russian, show them the English version
+- At the very end add ONE line: "💡 [по-русски: исправление если есть, или 'Отлично!']"
+- Be warm, encouraging, keep conversation going""",
 
         "picture": f"""Ты учишь английскому через картинки. Уровень ученика: {level}.
 🖼 Что на картинке (описание на русском)
@@ -149,6 +150,22 @@ async def transcribe_voice(file_path):
         return result
     except Exception as e:
         logging.error(f"Whisper: {e}")
+        return None
+
+async def text_to_speech(text):
+    try:
+        response = groq_client.audio.speech.create(
+            model="playai-tts",
+            voice="Celeste-PlayAI",
+            input=text[:500],
+            response_format="mp3"
+        )
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+            tmp_path = tmp.name
+        response.stream_to_file(tmp_path)
+        return tmp_path
+    except Exception as e:
+        logging.error(f"TTS: {e}")
         return None
 
 # === WEB API для Mini App ===
@@ -245,10 +262,10 @@ async def learn_words(message: types.Message):
 async def start_dialog(message: types.Message):
     user_modes[message.from_user.id] = "dialog"
     await message.answer(
-        "💬 *Режим диалога включён!*\n\n"
-        "Напиши мне что-нибудь — по-английски или по-русски.\n"
-        "Я отвечу, исправлю ошибки и объясню правила!\n\n"
-        "Попробуй написать: *Hello! My name is...*",
+        "💬 *Режим свободного диалога!*\n\n"
+        "Пиши по-английски на любую тему.\n"
+        "Я отвечу по-английски и исправлю ошибки на русском.\n\n"
+        "Try: *Hello! How was your day?*",
         parse_mode="Markdown"
     )
 
@@ -258,8 +275,9 @@ async def voice_chat_mode(message: types.Message):
     await message.answer(
         "🎙 *Голосовой режим включён!*\n\n"
         "Отправляй голосовые сообщения на английском.\n"
-        "Я пойму тебя и отвечу!\n\n"
-        "Нажми на микрофон и скажи что-нибудь! 🎤",
+        "Я отвечу голосом на английском!\n\n"
+        "Если будут ошибки — объясню на русском 💡\n\n"
+        "Нажми на микрофон и говори! 🎤",
         parse_mode="Markdown"
     )
 
@@ -277,8 +295,8 @@ async def picture_mode(message: types.Message):
 async def translator_mode(message: types.Message):
     user_modes[message.from_user.id] = "translator"
     await message.answer(
-        "🔄 *Режим переводчика включён!*\n\n"
-        "Напиши текст или отправь голосовое — переведу!\n\n"
+        "🔄 *Переводчик включён!*\n\n"
+        "Напиши любой текст — переведу мгновенно!\n\n"
         "🇷🇺 Русский → 🇬🇧 Английский\n"
         "🇬🇧 Английский → 🇷🇺 Русский",
         parse_mode="Markdown"
@@ -318,10 +336,10 @@ async def help_cmd(message: types.Message):
         "❓ *Как пользоваться ботом*\n\n"
         "🎯 *Урок дня* — персональный урок\n"
         "📚 *Слова* — 5 новых слов с ассоциациями\n"
-        "💬 *Диалог* — общайся с AI\n"
-        "🎙 *Голосовой чат* — говори по-английски\n"
+        "💬 *Диалог* — свободная практика английского\n"
+        "🎙 *Голосовой чат* — разговор голосом\n"
         "🖼 *Картинки* — учи слова по фото\n"
-        "🔄 *Переводчик* — текст и голос\n"
+        "🔄 *Переводчик* — мгновенный перевод\n"
         "📊 *Прогресс* — твой опыт и уровень\n\n"
         "📱 Нажми кнопку меню слева внизу для приложения!",
         parse_mode="Markdown"
@@ -333,7 +351,7 @@ async def handle_photo(message: types.Message):
     level = user.get("level", "A0")
     mode = user_modes.get(message.from_user.id, "picture")
     await message.answer("🔍 Анализирую картинку...")
-    prompt = "Пользователь прислал фото для перевода." if mode == "translator" else "Пользователь прислал фото для изучения английского."
+    prompt = "Переведи любой текст на этом фото." if mode == "translator" else "Пользователь прислал фото для изучения английского."
     response = await ask_ai(
         [{"role": "user", "content": prompt}],
         level, mode if mode in ["translator", "picture"] else "picture"
@@ -346,7 +364,7 @@ async def handle_voice(message: types.Message):
     user = await get_user(message.from_user.id)
     level = user.get("level", "A0")
     mode = user_modes.get(message.from_user.id, "voice_dialog")
-    await message.answer("🎙 Обрабатываю голосовое сообщение...")
+    await message.answer("🎙 Слушаю...")
     try:
         file = await bot.get_file(message.voice.file_id)
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
@@ -355,15 +373,28 @@ async def handle_voice(message: types.Message):
         text = await transcribe_voice(tmp_path)
         os.unlink(tmp_path)
         if not text:
-            await message.answer("Не смог разобрать голосовое. Попробуй ещё раз! 🔄")
+            await message.answer("Не смог разобрать. Попробуй ещё раз! 🔄")
             return
         await message.answer(f"🗣 *Ты сказал:* _{text}_", parse_mode="Markdown")
-        response = await ask_ai(
-            [{"role": "user", "content": text}],
-            level, "translator" if mode == "translator" else "voice_dialog"
-        )
+        if mode == "translator":
+            response = await ask_ai(
+                [{"role": "user", "content": text}],
+                level, "translator"
+            )
+            await message.answer(f"🔄 {response}")
+        else:
+            response = await ask_ai(
+                [{"role": "user", "content": text}],
+                level, "voice_dialog"
+            )
+            tts_path = await text_to_speech(response.split("💡")[0].strip())
+            if tts_path:
+                audio = types.FSInputFile(tts_path)
+                await bot.send_voice(message.chat.id, audio)
+                os.unlink(tts_path)
+            else:
+                await message.answer(response)
         new_level = await add_xp(message.from_user.id, 20)
-        await message.answer(response)
         if new_level:
             await message.answer(
                 f"🎉 *Новый уровень! Ты достиг {LEVEL_NAMES[new_level]}!*",
@@ -371,7 +402,7 @@ async def handle_voice(message: types.Message):
             )
     except Exception as e:
         logging.error(f"Voice: {e}")
-        await message.answer("Что-то пошло не так с голосовым. Попробуй ещё раз! 🔄")
+        await message.answer("Что-то пошло не так. Попробуй ещё раз! 🔄")
 
 @dp.message(F.text)
 async def handle_text(message: types.Message):

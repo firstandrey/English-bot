@@ -1,19 +1,18 @@
 import asyncio
 import logging
 import os
+import tempfile
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, FSInputFile
 from groq import Groq
 from supabase import create_client
 
-# Настройки
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-# Клиенты
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 groq_client = Groq(api_key=GROQ_API_KEY)
@@ -21,250 +20,356 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 logging.basicConfig(level=logging.INFO)
 
-# Главное меню
+LEVELS = ["A0", "A1", "A2", "B1", "B2", "C1"]
+
+LEVEL_NAMES = {
+    "A0": "🥚 Absolute Beginner",
+    "A1": "🐣 Beginner",
+    "A2": "🐥 Elementary",
+    "B1": "🦅 Intermediate",
+    "B2": "🦁 Upper-Intermediate",
+    "C1": "🏆 Advanced"
+}
+
+XP_PER_LEVEL = {
+    "A0": 0, "A1": 100, "A2": 300, "B1": 600, "B2": 1000, "C1": 1500
+}
+
+user_modes = {}
+
 def main_menu():
-    keyboard = ReplyKeyboardMarkup(
+    return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📚 Учить слова"), KeyboardButton(text="💬 Диалог с AI")],
-            [KeyboardButton(text="📊 Мой прогресс"), KeyboardButton(text="🎯 Урок дня")],
-            [KeyboardButton(text="ℹ️ Помощь")]
+            [KeyboardButton(text="📚 Words"), KeyboardButton(text="💬 Dialog")],
+            [KeyboardButton(text="🖼 Pictures"), KeyboardButton(text="🎙 Voice chat")],
+            [KeyboardButton(text="🔄 Translator"), KeyboardButton(text="📊 Progress")],
+            [KeyboardButton(text="🎯 Lesson"), KeyboardButton(text="❓ Help")]
         ],
         resize_keyboard=True
     )
-    return keyboard
 
-# Получить или создать пользователя
-async def get_or_create_user(user_id: int, username: str, full_name: str):
+async def get_user(user_id, username="", full_name=""):
     try:
-        result = supabase.table("users").select("*").eq("telegram_id", user_id).execute()
-        if result.data:
-            return result.data[0]
-        new_user = {
-            "telegram_id": user_id,
-            "username": username,
-            "full_name": full_name,
-            "level": "A0",
-            "xp": 0,
-            "streak": 0,
-            "lessons_done": 0
-        }
-        result = supabase.table("users").insert(new_user).execute()
-        return result.data[0]
+        r = supabase.table("users").select("*").eq("telegram_id", user_id).execute()
+        if r.data:
+            return r.data[0]
+        new = {"telegram_id": user_id, "username": username,
+               "full_name": full_name, "level": "A0", "xp": 0,
+               "streak": 0, "lessons_done": 0}
+        r = supabase.table("users").insert(new).execute()
+        return r.data[0]
     except Exception as e:
-        logging.error(f"DB error: {e}")
+        logging.error(f"DB: {e}")
         return {"level": "A0", "xp": 0, "streak": 0, "lessons_done": 0}
 
-# AI ответ
-async def ask_ai(messages: list, level: str = "A0") -> str:
-    system_prompt = f"""Ты дружелюбный учитель английского языка. 
-Уровень ученика: {level}.
-Правила:
-- Если уровень A0-A1: объясняй очень просто, используй много русского, английские слова пиши с переводом
-- Если уровень A2: половина объяснений на русском, половина на английском
-- Всегда исправляй ошибки мягко и с примерами
-- Делай уроки интересными и короткими (не больше 5 предложений)
-- Используй эмодзи для наглядности
-- В конце каждого сообщения задавай один простой вопрос чтобы практиковаться"""
-    
+async def add_xp(user_id, amount):
     try:
-        response = groq_client.chat.completions.create(
+        user = await get_user(user_id)
+        new_xp = user.get("xp", 0) + amount
+        current_level = user.get("level", "A0")
+        idx = LEVELS.index(current_level)
+        if idx < len(LEVELS) - 1:
+            next_level = LEVELS[idx + 1]
+            if new_xp >= XP_PER_LEVEL[next_level]:
+                supabase.table("users").update(
+                    {"xp": new_xp, "level": next_level}
+                ).eq("telegram_id", user_id).execute()
+                return next_level
+        supabase.table("users").update({"xp": new_xp}).eq("telegram_id", user_id).execute()
+    except Exception as e:
+        logging.error(f"XP: {e}")
+    return None
+
+async def ask_ai(messages, level="A0", mode="dialog"):
+    prompts = {
+        "dialog": f"""You are an English tutor. Student level: {level}.
+Rules:
+- Respond only in English
+- If level A0-A1: use very simple words, short sentences
+- If level A2+: use natural English
+- Always correct mistakes gently at the end of your reply like this: "💡 Correction: [mistake] → [correct form]"
+- Ask one follow-up question to keep conversation going
+- Be friendly and encouraging""",
+
+        "words": f"""You are an English vocabulary teacher. Student level: {level}.
+Give 5 useful words with:
+🔤 word [transcription]
+🇷🇺 translation
+💡 Example sentence
+🧠 Memory tip (association or image)
+End with a simple practice task.""",
+
+        "lesson": f"""You are an English teacher. Student level: {level}.
+Create a short engaging lesson:
+📖 Topic
+✨ 3 new words with examples
+📝 One grammar rule with examples
+🎯 Quick practice exercise
+Keep it fun and under 10 sentences total.""",
+
+        "translator": f"""You are a translator. 
+Translate the given text to English if it's in Russian, or to Russian if it's in English.
+Format:
+🔄 Translation: [result]
+📝 Notes: [brief grammar or usage note if helpful]""",
+
+        "voice_dialog": f"""You are having a real spoken English conversation. Student level: {level}.
+- Respond naturally as in real conversation
+- Keep responses short (2-3 sentences max)
+- At the end add: "💡 [one tip or correction if needed]"
+- Be warm and encouraging""",
+
+        "picture": f"""You are teaching English through images. Student level: {level}.
+Create an image-based lesson:
+🖼 Describe what's typically in this type of scene (5-7 items)
+📚 Key vocabulary with translations
+🧠 Memory associations for each word
+💬 2 example sentences
+❓ One question about the image in English"""
+    }
+
+    system = prompts.get(mode, prompts["dialog"])
+    try:
+        r = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
-            messages=[{"role": "system", "content": system_prompt}] + messages,
-            max_tokens=500,
+            messages=[{"role": "system", "content": system}] + messages,
+            max_tokens=600,
             temperature=0.7
         )
-        return response.choices[0].message.content
+        return r.choices[0].message.content
     except Exception as e:
-        logging.error(f"Groq error: {e}")
-        return "Извини, произошла ошибка. Попробуй ещё раз! 🔄"
+        logging.error(f"Groq: {e}")
+        return "Sorry, something went wrong. Please try again! 🔄"
 
-# Команда /start
+async def transcribe_voice(file_path):
+    try:
+        with open(file_path, "rb") as f:
+            result = groq_client.audio.transcriptions.create(
+                model="whisper-large-v3",
+                file=f,
+                response_format="text"
+            )
+        return result
+    except Exception as e:
+        logging.error(f"Whisper: {e}")
+        return None
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    user = await get_or_create_user(
-        message.from_user.id,
-        message.from_user.username or "",
-        message.from_user.full_name or ""
-    )
+    user = await get_user(message.from_user.id,
+                          message.from_user.username or "",
+                          message.from_user.full_name or "")
+    level = user.get("level", "A0")
+    level_name = LEVEL_NAMES.get(level, level)
     await message.answer(
-        f"👋 Привет, {message.from_user.first_name}!\n\n"
-        f"Я твой персональный учитель английского языка 🇬🇧\n\n"
-        f"За 30 дней ты сможешь:\n"
-        f"✅ Понимать английскую речь\n"
-        f"✅ Общаться на базовом уровне\n"
-        f"✅ Читать простые тексты\n\n"
-        f"Твой текущий уровень: {user.get('level', 'A0')}\n"
-        f"Занимаемся всего 30-60 минут в день!\n\n"
-        f"Выбери с чего начнём 👇",
+        f"👋 Hello, {message.from_user.first_name}!\n\n"
+        f"I'm your personal English AI tutor 🇬🇧\n\n"
+        f"In 30 days you will:\n"
+        f"✅ Understand English speech\n"
+        f"✅ Have real conversations\n"
+        f"✅ Read and write confidently\n\n"
+        f"Your level: {level_name}\n"
+        f"Just 30-60 min a day!\n\n"
+        f"Choose what to do 👇",
         reply_markup=main_menu()
     )
 
-# Урок дня
-@dp.message(F.text == "🎯 Урок дня")
+@dp.message(F.text == "🎯 Lesson")
 async def daily_lesson(message: types.Message):
-    user = await get_or_create_user(
-        message.from_user.id,
-        message.from_user.username or "",
-        message.from_user.full_name or ""
-    )
+    user = await get_user(message.from_user.id)
     level = user.get("level", "A0")
-    lessons_done = user.get("lessons_done", 0)
-    
-    prompt = f"""Создай урок дня для ученика.
-Это урок номер {lessons_done + 1}.
-Уровень: {level}
-Формат урока:
-1. Тема дня (одна строка)
-2. Три новых слова с переводом и примером
-3. Одно простое грамматическое правило
-4. Маленькое задание для практики
-Сделай урок интересным и мотивирующим!"""
-    
-    response = await ask_ai([{"role": "user", "content": prompt}], level)
-    
+    lessons = user.get("lessons_done", 0)
+    response = await ask_ai(
+        [{"role": "user", "content": f"Create lesson number {lessons+1}"}],
+        level, "lesson"
+    )
     try:
         supabase.table("users").update(
-            {"lessons_done": lessons_done + 1}
+            {"lessons_done": lessons+1}
         ).eq("telegram_id", message.from_user.id).execute()
     except:
         pass
-    
-    await message.answer(f"📖 *Урок дня #{lessons_done + 1}*\n\n{response}", parse_mode="Markdown")
+    new_level = await add_xp(message.from_user.id, 20)
+    text = f"📖 *Lesson #{lessons+1}*\n\n{response}"
+    if new_level:
+        text += f"\n\n🎉 *Level up! You reached {LEVEL_NAMES[new_level]}!*"
+    await message.answer(text, parse_mode="Markdown")
 
-# Учить слова
-@dp.message(F.text == "📚 Учить слова")
+@dp.message(F.text == "📚 Words")
 async def learn_words(message: types.Message):
-    user = await get_or_create_user(
-        message.from_user.id,
-        message.from_user.username or "",
-        message.from_user.full_name or ""
-    )
+    user = await get_user(message.from_user.id)
     level = user.get("level", "A0")
-    
-    prompt = """Дай мне 5 самых полезных английских слов для начинающего.
-Формат для каждого слова:
-🔤 Слово [транскрипция] — перевод
-💡 Пример: английское предложение — русский перевод
-После всех слов дай простое задание: составить одно предложение с любым из этих слов."""
-    
-    response = await ask_ai([{"role": "user", "content": prompt}], level)
-    await message.answer(f"📚 *Новые слова*\n\n{response}", parse_mode="Markdown")
+    response = await ask_ai(
+        [{"role": "user", "content": "Give me 5 useful words"}],
+        level, "words"
+    )
+    await add_xp(message.from_user.id, 10)
+    await message.answer(f"📚 *New Words*\n\n{response}", parse_mode="Markdown")
 
-# Диалог с AI
-@dp.message(F.text == "💬 Диалог с AI")
+@dp.message(F.text == "💬 Dialog")
 async def start_dialog(message: types.Message):
+    user_modes[message.from_user.id] = "dialog"
     await message.answer(
-        "💬 *Режим диалога активирован!*\n\n"
-        "Напиши мне что-нибудь на английском (или по-русски если не знаешь как) — "
-        "и я отвечу, исправлю ошибки и помогу научиться!\n\n"
-        "Например напиши: *Hello* или *Как сказать 'я хочу есть'?*",
+        "💬 *Dialog mode*\n\n"
+        "Write anything in English — I'll reply, correct mistakes and help you improve!\n\n"
+        "Try: *Hello! How are you?*",
         parse_mode="Markdown"
     )
 
-# Прогресс
-@dp.message(F.text == "📊 Мой прогресс")
-async def show_progress(message: types.Message):
-    user = await get_or_create_user(
-        message.from_user.id,
-        message.from_user.username or "",
-        message.from_user.full_name or ""
+@dp.message(F.text == "🎙 Voice chat")
+async def voice_chat_mode(message: types.Message):
+    user_modes[message.from_user.id] = "voice_dialog"
+    await message.answer(
+        "🎙 *Voice chat mode*\n\n"
+        "Send voice messages in English — I'll understand you and reply!\n\n"
+        "I'll also point out any mistakes to help you improve 💪\n\n"
+        "Go ahead, say something! 🎤",
+        parse_mode="Markdown"
     )
+
+@dp.message(F.text == "🖼 Pictures")
+async def picture_mode(message: types.Message):
+    user_modes[message.from_user.id] = "picture"
+    await message.answer(
+        "🖼 *Picture mode*\n\n"
+        "Send any photo — I'll teach you English words and associations based on it!\n\n"
+        "📸 Send your photo now!",
+        parse_mode="Markdown"
+    )
+
+@dp.message(F.text == "🔄 Translator")
+async def translator_mode(message: types.Message):
+    user_modes[message.from_user.id] = "translator"
+    await message.answer(
+        "🔄 *Translator mode*\n\n"
+        "Send text, photo or voice — I'll translate it!\n\n"
+        "🇷🇺 Russian → 🇬🇧 English\n"
+        "🇬🇧 English → 🇷🇺 Russian\n\n"
+        "Type or send something now!",
+        parse_mode="Markdown"
+    )
+
+@dp.message(F.text == "📊 Progress")
+async def show_progress(message: types.Message):
+    user = await get_user(message.from_user.id)
     level = user.get("level", "A0")
     xp = user.get("xp", 0)
     streak = user.get("streak", 0)
     lessons = user.get("lessons_done", 0)
-    
-    levels = ["A0", "A1", "A2", "B1", "B2", "C1"]
-    current_idx = levels.index(level) if level in levels else 0
-    progress_bar = "🟩" * (current_idx + 1) + "⬜" * (5 - current_idx)
-    
+    level_name = LEVEL_NAMES.get(level, level)
+    idx = LEVELS.index(level) if level in LEVELS else 0
+    filled = "🟩" * (idx + 1)
+    empty = "⬜" * (5 - idx)
+    bar = filled + empty
+    if idx < len(LEVELS) - 1:
+        next_level = LEVELS[idx + 1]
+        needed = XP_PER_LEVEL[next_level] - xp
+        next_info = f"📈 {needed} XP to {LEVEL_NAMES[next_level]}"
+    else:
+        next_info = "🏆 Maximum level reached!"
     await message.answer(
-        f"📊 *Твой прогресс*\n\n"
-        f"🎯 Уровень: {level}\n"
-        f"{progress_bar}\n\n"
-        f"⭐ Опыт: {xp} XP\n"
-        f"🔥 Streak: {streak} дней подряд\n"
-        f"📖 Уроков пройдено: {lessons}\n\n"
-        f"{'🏆 Отличный прогресс! Продолжай!' if lessons > 5 else '💪 Хорошее начало! Занимайся каждый день!'}",
+        f"📊 *Your Progress*\n\n"
+        f"🎯 Level: {level_name}\n"
+        f"{bar}\n\n"
+        f"⭐ XP: {xp}\n"
+        f"{next_info}\n\n"
+        f"🔥 Streak: {streak} days\n"
+        f"📖 Lessons done: {lessons}\n\n"
+        f"{'🏆 Amazing progress!' if lessons > 10 else '💪 Keep going every day!'}",
         parse_mode="Markdown"
     )
 
-# Помощь
-@dp.message(F.text == "ℹ️ Помощь")
+@dp.message(F.text == "❓ Help")
 async def help_cmd(message: types.Message):
     await message.answer(
-        "ℹ️ *Как пользоваться ботом*\n\n"
-        "🎯 *Урок дня* — получи новый урок\n"
-        "📚 *Учить слова* — новые слова с примерами\n"
-        "💬 *Диалог с AI* — практикуй разговор\n"
-        "📊 *Прогресс* — смотри свои достижения\n\n"
-        "💡 *Советы:*\n"
-        "• Занимайся каждый день хотя бы 30 минут\n"
-        "• Отправляй голосовые сообщения для практики\n"
-        "• Не бойся ошибаться — это нормально!\n\n"
-        "📸 Можешь отправить картинку — я помогу описать её по-английски!",
+        "❓ *How to use the bot*\n\n"
+        "🎯 *Lesson* — daily lesson for your level\n"
+        "📚 *Words* — 5 new words with associations\n"
+        "💬 *Dialog* — chat with AI, get corrections\n"
+        "🎙 *Voice chat* — speak English, AI replies\n"
+        "🖼 *Pictures* — learn words from photos\n"
+        "🔄 *Translator* — text, photo or voice\n"
+        "📊 *Progress* — your XP and level\n\n"
+        "💡 *Tips:*\n"
+        "• Practice every day\n"
+        "• Don't be afraid to make mistakes\n"
+        "• Use voice mode for speaking practice\n"
+        "• Send photos to learn new vocabulary",
         parse_mode="Markdown"
     )
 
-# Обработка картинок
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
-    user = await get_or_create_user(
-        message.from_user.id,
-        message.from_user.username or "",
-        message.from_user.full_name or ""
-    )
+    user = await get_user(message.from_user.id)
     level = user.get("level", "A0")
-    
-    prompt = """Пользователь прислал картинку для изучения английского.
-Сделай следующее:
-1. Опиши что обычно бывает на таких картинках (5-7 предметов)
-2. Дай английские слова для этих предметов с переводом
-3. Составь 2 простых предложения описывающих картинку
-4. Задай вопрос о картинке на английском с переводом"""
-    
-    response = await ask_ai([{"role": "user", "content": prompt}], level)
+    mode = user_modes.get(message.from_user.id, "picture")
+    if mode == "translator":
+        prompt = "The user sent a photo with text. Please translate any text you see, or describe what to translate."
+    else:
+        prompt = "User sent a photo for English learning."
+    response = await ask_ai(
+        [{"role": "user", "content": prompt}],
+        level, mode if mode in ["translator", "picture"] else "picture"
+    )
+    await add_xp(message.from_user.id, 15)
     await message.answer(
-        f"🖼 *Учим английский по картинке!*\n\n{response}",
+        f"🖼 *Picture lesson*\n\n{response}",
         parse_mode="Markdown"
     )
 
-# Обработка голосовых
 @dp.message(F.voice)
 async def handle_voice(message: types.Message):
-    await message.answer(
-        "🎙 *Голосовое получено!*\n\n"
-        "Голосовые сообщения скоро будут доступны.\n"
-        "А пока напиши текстом что хотел сказать — я помогу перевести и исправить! 💪",
-        parse_mode="Markdown"
-    )
+    user = await get_user(message.from_user.id)
+    level = user.get("level", "A0")
+    mode = user_modes.get(message.from_user.id, "voice_dialog")
+    await message.answer("🎙 Processing your voice message...")
+    try:
+        file = await bot.get_file(message.voice.file_id)
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+            tmp_path = tmp.name
+        await bot.download_file(file.file_path, tmp_path)
+        text = await transcribe_voice(tmp_path)
+        os.unlink(tmp_path)
+        if not text:
+            await message.answer("Sorry, I couldn't understand the audio. Please try again! 🔄")
+            return
+        await message.answer(f"🗣 *You said:* _{text}_", parse_mode="Markdown")
+        if mode == "translator":
+            response = await ask_ai(
+                [{"role": "user", "content": text}],
+                level, "translator"
+            )
+        else:
+            response = await ask_ai(
+                [{"role": "user", "content": text}],
+                level, "voice_dialog"
+            )
+        await add_xp(message.from_user.id, 20)
+        new_level = await add_xp(message.from_user.id, 0)
+        await message.answer(response)
+        if new_level:
+            await message.answer(f"🎉 *Level up! You reached {LEVEL_NAMES[new_level]}!*", parse_mode="Markdown")
+    except Exception as e:
+        logging.error(f"Voice: {e}")
+        await message.answer("Something went wrong with voice processing. Try again! 🔄")
 
-# Обработка всех текстовых сообщений (диалог)
 @dp.message(F.text)
 async def handle_text(message: types.Message):
-    user = await get_or_create_user(
-        message.from_user.id,
-        message.from_user.username or "",
-        message.from_user.full_name or ""
-    )
+    user = await get_user(message.from_user.id)
     level = user.get("level", "A0")
-    
+    mode = user_modes.get(message.from_user.id, "dialog")
     response = await ask_ai(
         [{"role": "user", "content": message.text}],
-        level
+        level, mode
     )
-    
-    try:
-        xp = user.get("xp", 0)
-        supabase.table("users").update(
-            {"xp": xp + 5}
-        ).eq("telegram_id", message.from_user.id).execute()
-    except:
-        pass
-    
+    new_level = await add_xp(message.from_user.id, 5)
     await message.answer(response)
+    if new_level:
+        await message.answer(
+            f"🎉 *Level up! You reached {LEVEL_NAMES[new_level]}!*",
+            parse_mode="Markdown"
+        )
 
-# Запуск
 async def main():
     await dp.start_polling(bot)
 

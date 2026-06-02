@@ -2,6 +2,8 @@ import asyncio
 import logging
 import os
 import tempfile
+import json
+from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
@@ -20,21 +22,13 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 logging.basicConfig(level=logging.INFO)
 
-LEVELS = ["A0", "A1", "A2", "B1", "B2", "C1"]
-
+LEVELS = ["A0","A1","A2","B1","B2","C1"]
 LEVEL_NAMES = {
-    "A0": "🥚 Абсолютный новичок",
-    "A1": "🐣 Начинающий",
-    "A2": "🐥 Элементарный",
-    "B1": "🦅 Средний",
-    "B2": "🦁 Выше среднего",
-    "C1": "🏆 Продвинутый"
+    "A0":"🥚 Абсолютный новичок","A1":"🐣 Начинающий",
+    "A2":"🐥 Элементарный","B1":"🦅 Средний",
+    "B2":"🦁 Выше среднего","C1":"🏆 Продвинутый"
 }
-
-XP_PER_LEVEL = {
-    "A0": 0, "A1": 100, "A2": 300, "B1": 600, "B2": 1000, "C1": 1500
-}
-
+XP_PER_LEVEL = {"A0":0,"A1":100,"A2":300,"B1":600,"B2":1000,"C1":1500}
 user_modes = {}
 
 def main_menu():
@@ -86,9 +80,8 @@ async def ask_ai(messages, level="A0", mode="dialog"):
     prompts = {
         "dialog": f"""Ты дружелюбный учитель английского языка. Уровень ученика: {level}.
 Правила:
-- Объяснения и исправления ВСЕГДА на русском языке
-- Но сам диалог и примеры ВСЕГДА на английском с переводом в скобках
-- Если уровень A0-A1: пиши короткие английские фразы, сразу давай перевод и транскрипцию. Например: "Let's be friends! [лэтс би фрэндз] — Давай дружить! 🐱"
+- Объяснения ВСЕГДА на русском языке
+- Если уровень A0-A1: пиши короткие английские фразы, сразу давай перевод и транскрипцию
 - Если уровень A2: английские предложения + перевод под каждым
 - Если уровень B1+: в основном английский, перевод только для сложных слов
 - ВСЕГДА давай 1-2 английские фразы по теме разговора с переводом
@@ -100,32 +93,31 @@ async def ask_ai(messages, level="A0", mode="dialog"):
 Дай 5 полезных слов в формате:
 🔤 Слово [транскрипция] — перевод
 💡 Пример: English sentence — русский перевод
-🧠 Ассоциация для запоминания (яркий образ или история)
+🧠 Ассоциация для запоминания
 После всех слов — простое задание на практику.""",
 
         "lesson": f"""Ты учитель английского. Уровень ученика: {level}.
-Создай увлекательный урок:
+Создай увлекательный урок дня:
 📖 Тема урока (на русском)
-✨ 3 новых слова с переводом и примерами
-📝 Одно грамматическое правило с примерами на русском
+✨ 3 новых слова с переводом транскрипцией и примерами
+📝 Одно грамматическое правило с примерами
 🎯 Практическое задание
-Всё объяснение на русском языке, английские примеры с переводом.""",
+Всё объяснение на русском, английские примеры с переводом.""",
 
         "translator": f"""Ты переводчик.
 Если текст на русском — переведи на английский.
 Если текст на английском — переведи на русский.
-Формат ответа:
+Формат:
 🔄 Перевод: [результат]
-📝 Примечание: [краткое грамматическое пояснение если нужно]""",
+📝 Примечание: [краткое пояснение если нужно]""",
 
         "voice_dialog": f"""Ты ведёшь живой разговорный диалог на английском. Уровень ученика: {level}.
 - Отвечай на английском коротко и естественно (2-3 предложения)
-- В конце ВСЕГДА добавляй на русском: "💡 [исправление ошибки или совет если есть]"
+- В конце ВСЕГДА добавляй на русском: "💡 [исправление ошибки или совет]"
 - Если уровень A0-A1: добавь перевод своего ответа на русском
 - Будь тёплым и поддерживающим""",
 
         "picture": f"""Ты учишь английскому через картинки. Уровень ученика: {level}.
-Урок по картинке:
 🖼 Что на картинке (описание на русском)
 📚 5-7 ключевых слов: английское [транскрипция] — русский перевод
 🧠 Яркая ассоциация для каждого слова
@@ -159,6 +151,40 @@ async def transcribe_voice(file_path):
         logging.error(f"Whisper: {e}")
         return None
 
+# === WEB API для Mini App ===
+async def handle_ai_request(request):
+    try:
+        data = await request.json()
+        messages = data.get("messages", [])
+        level = data.get("level", "A0")
+        mode = data.get("mode", "dialog")
+        response = await ask_ai(messages, level, mode)
+        return web.Response(
+            text=json.dumps({"reply": response}, ensure_ascii=False),
+            content_type="application/json",
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "Content-Type"
+            }
+        )
+    except Exception as e:
+        logging.error(f"API: {e}")
+        return web.Response(
+            text=json.dumps({"error": str(e)}),
+            content_type="application/json",
+            headers={"Access-Control-Allow-Origin": "*"}
+        )
+
+async def handle_options(request):
+    return web.Response(
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type"
+        }
+    )
+
+# === TELEGRAM HANDLERS ===
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     user = await get_user(
@@ -177,7 +203,7 @@ async def cmd_start(message: types.Message):
         f"✅ Читать и писать уверенно\n\n"
         f"🎯 Твой уровень: {level_name}\n"
         f"⏱ Всего 30-60 минут в день!\n\n"
-        f"Выбери с чего начнём 👇",
+        f"Нажми кнопку меню внизу слева чтобы открыть приложение! 👇",
         reply_markup=main_menu()
     )
 
@@ -222,8 +248,7 @@ async def start_dialog(message: types.Message):
         "💬 *Режим диалога включён!*\n\n"
         "Напиши мне что-нибудь — по-английски или по-русски.\n"
         "Я отвечу, исправлю ошибки и объясню правила!\n\n"
-        "Попробуй написать: *Hello! My name is...*\n"
-        "Или спроси: *Как сказать 'я хочу есть'?*",
+        "Попробуй написать: *Hello! My name is...*",
         parse_mode="Markdown"
     )
 
@@ -234,9 +259,7 @@ async def voice_chat_mode(message: types.Message):
         "🎙 *Голосовой режим включён!*\n\n"
         "Отправляй голосовые сообщения на английском.\n"
         "Я пойму тебя и отвечу!\n\n"
-        "Также укажу на ошибки в произношении и грамматике 💪\n\n"
-        "Нажми на микрофон и скажи что-нибудь! 🎤\n"
-        "Например: *Hello! How are you?*",
+        "Нажми на микрофон и скажи что-нибудь! 🎤",
         parse_mode="Markdown"
     )
 
@@ -245,9 +268,7 @@ async def picture_mode(message: types.Message):
     user_modes[message.from_user.id] = "picture"
     await message.answer(
         "🖼 *Режим обучения по картинкам!*\n\n"
-        "Отправь любое фото — я научу тебя английским словам "
-        "связанным с тем что на картинке!\n\n"
-        "Плюс дам яркие ассоциации для запоминания 🧠\n\n"
+        "Отправь любое фото — научу тебя английским словам!\n\n"
         "📸 Отправь фото прямо сейчас!",
         parse_mode="Markdown"
     )
@@ -257,13 +278,9 @@ async def translator_mode(message: types.Message):
     user_modes[message.from_user.id] = "translator"
     await message.answer(
         "🔄 *Режим переводчика включён!*\n\n"
-        "Я переведу:\n"
-        "✍️ Текст — просто напиши\n"
-        "📸 Фото с текстом — отправь картинку\n"
-        "🎙 Голосовое — запиши сообщение\n\n"
+        "Напиши текст или отправь голосовое — переведу!\n\n"
         "🇷🇺 Русский → 🇬🇧 Английский\n"
-        "🇬🇧 Английский → 🇷🇺 Русский\n\n"
-        "Напиши или отправь что нужно перевести!",
+        "🇬🇧 Английский → 🇷🇺 Русский",
         parse_mode="Markdown"
     )
 
@@ -291,7 +308,7 @@ async def show_progress(message: types.Message):
         f"{next_info}\n\n"
         f"🔥 Streak: {streak} дней подряд\n"
         f"📖 Уроков пройдено: {lessons}\n\n"
-        f"{'🏆 Отличный прогресс! Так держать!' if lessons > 10 else '💪 Занимайся каждый день!'}",
+        f"{'🏆 Отличный прогресс!' if lessons > 10 else '💪 Занимайся каждый день!'}",
         parse_mode="Markdown"
     )
 
@@ -299,18 +316,14 @@ async def show_progress(message: types.Message):
 async def help_cmd(message: types.Message):
     await message.answer(
         "❓ *Как пользоваться ботом*\n\n"
-        "🎯 *Урок дня* — персональный урок под твой уровень\n"
+        "🎯 *Урок дня* — персональный урок\n"
         "📚 *Слова* — 5 новых слов с ассоциациями\n"
-        "💬 *Диалог* — общайся с AI, получай исправления\n"
-        "🎙 *Голосовой чат* — говори по-английски, AI отвечает\n"
-        "🖼 *Картинки* — учи слова по фотографиям\n"
-        "🔄 *Переводчик* — текст, фото или голос\n"
+        "💬 *Диалог* — общайся с AI\n"
+        "🎙 *Голосовой чат* — говори по-английски\n"
+        "🖼 *Картинки* — учи слова по фото\n"
+        "🔄 *Переводчик* — текст и голос\n"
         "📊 *Прогресс* — твой опыт и уровень\n\n"
-        "💡 *Советы:*\n"
-        "• Занимайся каждый день хотя бы 30 минут\n"
-        "• Не бойся ошибаться — это часть обучения\n"
-        "• Используй голосовой режим для практики речи\n"
-        "• Отправляй фото из жизни для изучения слов",
+        "📱 Нажми кнопку меню слева внизу для приложения!",
         parse_mode="Markdown"
     )
 
@@ -320,10 +333,7 @@ async def handle_photo(message: types.Message):
     level = user.get("level", "A0")
     mode = user_modes.get(message.from_user.id, "picture")
     await message.answer("🔍 Анализирую картинку...")
-    if mode == "translator":
-        prompt = "Пользователь прислал фото с текстом для перевода."
-    else:
-        prompt = "Пользователь прислал фото для изучения английского."
+    prompt = "Пользователь прислал фото для перевода." if mode == "translator" else "Пользователь прислал фото для изучения английского."
     response = await ask_ai(
         [{"role": "user", "content": prompt}],
         level, mode if mode in ["translator", "picture"] else "picture"
@@ -348,16 +358,10 @@ async def handle_voice(message: types.Message):
             await message.answer("Не смог разобрать голосовое. Попробуй ещё раз! 🔄")
             return
         await message.answer(f"🗣 *Ты сказал:* _{text}_", parse_mode="Markdown")
-        if mode == "translator":
-            response = await ask_ai(
-                [{"role": "user", "content": text}],
-                level, "translator"
-            )
-        else:
-            response = await ask_ai(
-                [{"role": "user", "content": text}],
-                level, "voice_dialog"
-            )
+        response = await ask_ai(
+            [{"role": "user", "content": text}],
+            level, "translator" if mode == "translator" else "voice_dialog"
+        )
         new_level = await add_xp(message.from_user.id, 20)
         await message.answer(response)
         if new_level:
@@ -385,53 +389,18 @@ async def handle_text(message: types.Message):
             f"🎉 *Новый уровень! Ты достиг {LEVEL_NAMES[new_level]}!*",
             parse_mode="Markdown"
         )
-@dp.message(F.web_app_data)
-async def handle_webapp(message: types.Message):
-    import json
-    user = await get_user(message.from_user.id)
-    level = user.get("level", "A0")
-    try:
-        data = json.loads(message.web_app_data.data)
-        action = data.get("action", "")
-    except:
-        return
 
-    mode_map = {
-        "lesson": "lesson",
-        "words": "words", 
-        "dialog": "dialog",
-        "voice": "voice_dialog",
-        "picture": "picture",
-        "translate": "translator"
-    }
-
-    mode = mode_map.get(action, "dialog")
-    user_modes[message.from_user.id] = mode
-
-    responses = {
-        "lesson": "🎯 Урок дня",
-        "words": "📚 Слова",
-        "dialog": "💬 Диалог",
-        "voice": "🎙 Голосовой чат",
-        "picture": "🖼 Картинки",
-        "translate": "🔄 Переводчик"
-    }
-
-    cmd = responses.get(action, "💬 Диалог")
-    
-    if action == "lesson":
-        await daily_lesson(message)
-    elif action == "words":
-        await learn_words(message)
-    elif action == "dialog":
-        await start_dialog(message)
-    elif action == "voice":
-        await voice_chat_mode(message)
-    elif action == "picture":
-        await picture_mode(message)
-    elif action == "translate":
-        await translator_mode(message)
+# === ЗАПУСК ===
 async def main():
+    app = web.Application()
+    app.router.add_post("/ai", handle_ai_request)
+    app.router.add_route("OPTIONS", "/ai", handle_options)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logging.info(f"API server started on port {port}")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
